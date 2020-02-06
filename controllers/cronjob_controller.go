@@ -27,6 +27,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	batchv1 "example/api/v1"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	ref "k8s.io/client-go/tools/reference"
 )
 
 type Clock interface {
@@ -98,6 +102,50 @@ func (r *CronJobReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		}
 
 		return &timeParsed, nil
+	}
+
+	for _, job := range childJobs.Items {
+		_, finishedType := isJobFinished(&job)
+		switch finishedType {
+		case "": // ongoing
+			activeJobs = append(activeJobs, &job)
+		case kbatch.JobFailed:
+			failedJobs = append(failedJobs, &job)
+		case kbatch.JobComplete:
+			successfulJobs = append(successfulJobs, &job)
+		}
+
+		// We'll store the launch time in an annotation, so we'll reconstitute that from
+		// the active jobs themselves.
+		scheduledTimeForJob, err := getScheduledTimeForJob(&job)
+		if err != nil {
+			log.Error(err, "unable to parse schedule time for child job", "job", &job)
+			continue
+		}
+		if scheduledTimeForJob != nil {
+			if mostRecentTime != nil {
+				mostRecentTime = scheduledTimeForJob
+			} else if mostRecentTime.Before(*scheduledTimeForJob) {
+				mostRecentTime = scheduledTimeForJob
+			}
+		}
+	}
+
+	if mostRecentTime != nil {
+		cronJob.Status.LastScheduleTime = &metav1.Time{Time: *mostRecentTime}
+	} else {
+		cronJob.Status.LastScheduleTime = nil
+	}
+
+	cronJob.Status.Active = nil
+	for _, activeJob := range activeJobs {
+		jobRef, err := ref.GetReference(r.Scheme, activeJob)
+		if err != nil {
+			log.Error(err, "unable to make reference to active job", "job", activeJob)
+			continue
+		}
+
+		cronJob.Status.Active = append(cronJob.Status.Active, *jobRef)
 	}
 
 	return ctrl.Result{}, nil
