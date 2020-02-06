@@ -54,6 +54,31 @@ var (
 	scheduledTimeAnnotation = "batch.tutorial.kubebuilder.io/scheduled-at"
 )
 
+func isJobFinished(job *kbatch.Job) (bool, kbatch.JobConditionType) {
+	for _, c := range job.Status.Conditions {
+		if (c.Type == kbatch.JobComplete || c.Type == kbatch.JobFailed) && c.Status == corev1.ConditionTrue {
+			return true, c.Type
+		}
+	}
+
+	return false, ""
+}
+
+func getScheduledTimeForJob(job *kbatch.Job) (*time.Time, error) {
+	timeRaw := job.Annotations[scheduledTimeAnnotation]
+
+	if len(timeRaw) == 0 {
+		return nil, nil
+	}
+
+	timeParsed, err := time.Parse(time.RFC3339, timeRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	return &timeParsed, nil
+}
+
 func (r *CronJobReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
 	log := r.Log.WithValues("cronjob", req.NamespacedName)
@@ -78,31 +103,6 @@ func (r *CronJobReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	var successfulJobs []*kbatch.Job
 	var failedJobs []*kbatch.Job
 	var mostRecentTime *time.Time // find the last run so we can update the status
-
-	isJobFinished := func(job *kbatch.Job) (bool, kbatch.JobConditionType) {
-		for _, c := range job.Status.Conditions {
-			if (c.Type == kbatch.JobComplete || c.Type == kbatch.JobFailed) && c.Status == corev1.ConditionTrue {
-				return true, c.Type
-			}
-		}
-
-		return false, ""
-	}
-
-	getScheduledTimeForJob := func(job *kbatch.Job) (*time.Time, error) {
-		timeRaw := job.Annotations[scheduledTimeAnnotation]
-
-		if len(timeRaw) == 0 {
-			return nil, nil
-		}
-
-		timeParsed, err := time.Parse(time.RFC3339, timeRaw)
-		if err != nil {
-			return nil, err
-		}
-
-		return &timeParsed, nil
-	}
 
 	for _, job := range childJobs.Items {
 		_, finishedType := isJobFinished(&job)
